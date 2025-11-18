@@ -3,6 +3,7 @@ from typing import List
 import uuid
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
+from google.api_core import exceptions as google_exceptions
 from fastapi import APIRouter, HTTPException, status, Depends
 
 from db.session import get_db_pool
@@ -19,7 +20,7 @@ from core.config import GEMINI_MODEL_VERSION, MAX_CONVERSATION_TOKENS
 router = APIRouter()
 
 @router.post("/start", response_model=StartChatSessionResponse, status_code=status.HTTP_201_CREATED)
-async def start_chat_session(request: StartChatSessionRequest = Depends(), db_pool=Depends(get_db_pool)):
+async def start_chat_session(request: StartChatSessionRequest = StartChatSessionRequest(), db_pool=Depends(get_db_pool)):
     if not db_pool:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     
@@ -40,6 +41,25 @@ async def start_chat_session(request: StartChatSessionRequest = Depends(), db_po
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create chat session.")
         except Exception as e:
             print(f"Error creating chat session: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
+@router.get("/users/{user_id}/sessions", response_model=List[UserSessionInfo], status_code=status.HTTP_200_OK)
+async def get_user_sessions(user_id: int, db_pool=Depends(get_db_pool)):
+    if not db_pool:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
+
+    async with db_pool.acquire() as connection:
+        try:
+            query = """
+            SELECT session_id, updated_at, session_name AS title
+            FROM chat_sessions
+            WHERE user_id = $1 AND session_name IS NOT NULL
+            ORDER BY updated_at DESC;
+            """
+            records = await connection.fetch(query, user_id)
+            return [UserSessionInfo(session_id=r['session_id'], updated_at=r['updated_at'], title=r['title']) for r in records]
+        except Exception as e:
+            print(f"Error retrieving user sessions: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
 
 @router.get("/{session_id}", response_model=ChatSessionResponse, status_code=status.HTTP_200_OK)
@@ -86,39 +106,49 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db
             
             system_instruction_override = None
             generation_config_override = None
+            bot_version_override = None
 
             if request.config:
                 config_dict = request.config.dict(exclude_unset=True)
                 if "system_instruction" in config_dict:
                     system_instruction_override = config_dict.pop("system_instruction")
+                if "bot_version" in config_dict:
+                    bot_version_override = config_dict.pop("bot_version")
                 generation_config_override = GenerationConfig(**config_dict)
 
             final_system_instruction = system_instruction_override if system_instruction_override is not None else session_record.get('system_prompt')
-            
-            model = genai.GenerativeModel(GEMINI_MODEL_VERSION, system_instruction=final_system_instruction)
-            
-            gemini_history = [{"role": msg.role, "parts": [msg.content]} for msg in history]
-            
-            while True:
-                total_tokens = await model.count_tokens_async(gemini_history)
-                if total_tokens.total_tokens <= MAX_CONVERSATION_TOKENS:
-                    break
-                
-                print(f"Token count {total_tokens.total_tokens} exceeds limit. Truncating history...")
-                if len(gemini_history) > 2:
-                    gemini_history = gemini_history[2:]
-                else:
-                    break
-            
-            history = [ChatMessage(role=msg["role"], content=msg["parts"][0]) for msg in gemini_history]
+            final_bot_version = bot_version_override or GEMINI_MODEL_VERSION
             
             try:
+                model = genai.GenerativeModel(final_bot_version, system_instruction=final_system_instruction)
+                
+                gemini_history = [{"role": msg.role, "parts": [msg.content]} for msg in history]
+                
+                while True:
+                    total_tokens = await model.count_tokens_async(gemini_history)
+                    if total_tokens.total_tokens <= MAX_CONVERSATION_TOKENS:
+                        break
+                    
+                    print(f"Token count {total_tokens.total_tokens} exceeds limit. Truncating history...")
+                    if len(gemini_history) > 2:
+                        gemini_history = gemini_history[2:]
+                    else:
+                        break
+                
+                history = [ChatMessage(role=msg["role"], content=msg["parts"][0]) for msg in gemini_history]
+                
                 chat = model.start_chat(history=[m for m in gemini_history[:-1]])
                 response = await chat.send_message_async(
                     content=gemini_history[-1]['parts'],
                     generation_config=generation_config_override
                 )
                 history.append(ChatMessage(role="model", content=response.text))
+
+            except google_exceptions.NotFound as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid bot_version: The model '{final_bot_version}' was not found. Please check the model name."
+                )
             except Exception as e:
                 print(f"Error communicating with Gemini API: {e}")
                 raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to get response from AI model.")
@@ -143,25 +173,7 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db
             return ChatSessionResponse(
                 session_id=str(session_id), 
                 session_name=final_session_name, 
-                system_prompt=final_system_instruction, 
+                system_prompt=final_system_instruction,
+                bot_version=final_bot_version,
                 history=history
             )
-
-@router.get("/users/{user_id}/sessions", response_model=List[UserSessionInfo], status_code=status.HTTP_200_OK)
-async def get_user_sessions(user_id: int, db_pool=Depends(get_db_pool)):
-    if not db_pool:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
-
-    async with db_pool.acquire() as connection:
-        try:
-            query = """
-            SELECT session_id, updated_at, session_name AS title
-            FROM chat_sessions
-            WHERE user_id = $1 AND session_name IS NOT NULL
-            ORDER BY updated_at DESC;
-            """
-            records = await connection.fetch(query, user_id)
-            return [UserSessionInfo(session_id=r['session_id'], updated_at=r['updated_at'], title=r['title']) for r in records]
-        except Exception as e:
-            print(f"Error retrieving user sessions: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
