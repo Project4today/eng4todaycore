@@ -1,4 +1,4 @@
-# API Documentation: AI Chatbox v1.1
+# API Documentation: AI Chatbox v0.1.0-beta
 
 This document provides the necessary API details for the frontend team to implement the chat, chat history, and persona management features.
 
