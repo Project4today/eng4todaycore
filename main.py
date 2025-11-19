@@ -1,27 +1,32 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import routers from the api directory
+# Import routers and lifespan manager
 from api import personas, chat, users
-# Import the lifespan manager from the db directory
 from db.session import lifespan
+# Import the new logging middleware
+from core.logging_middleware import RequestLoggingMiddleware
 
 # Initialize the FastAPI app with the lifespan manager
 app = FastAPI(
     title="AI Chatbox API",
     description="Backend API for an AI Chatbox application with session management.",
-    version="1.2.0", # Bump version for new structure
+    version="1.3.0", # Bump version for new logging feature
     lifespan=lifespan
 )
 
-# --- CORS Middleware ---
-# Allows the frontend to communicate with this backend
+# --- Add Middleware ---
+
+# IMPORTANT: Add the logging middleware first to ensure it logs all requests.
+app.add_middleware(RequestLoggingMiddleware)
+
+# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins for development
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all HTTP methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- Include Routers ---

@@ -4,7 +4,7 @@ import uuid
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
 from google.api_core import exceptions as google_exceptions
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Response
 
 from db.session import get_db_pool
 from models.chat import (
@@ -13,6 +13,7 @@ from models.chat import (
     StartChatSessionRequest,
     StartChatSessionResponse,
     ChatSessionResponse,
+    UserSessionInfo,
 )
 from models.persona import Persona
 from core.config import GEMINI_MODEL_VERSION, MAX_CONVERSATION_TOKENS
@@ -61,13 +62,14 @@ async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(g
     async with db_pool.acquire() as connection:
         try:
             result = await connection.fetchrow(
-                "INSERT INTO chat_sessions (user_id, persona_id, history) VALUES ($1, $2, '[]'::jsonb) RETURNING session_id, persona_id",
-                request.user_id, request.persona_id
+                "INSERT INTO chat_sessions (user_id, persona_id, bot_version, history) VALUES ($1, $2, $3, '[]'::jsonb) RETURNING *",
+                request.user_id, request.persona_id, request.bot_version
             )
             if result:
                 return StartChatSessionResponse(
                     session_id=str(result['session_id']), 
                     persona_id=result['persona_id'],
+                    bot_version=result['bot_version'],
                     history=[]
                 )
             else:
@@ -76,13 +78,32 @@ async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(g
             print(f"Error creating chat session: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
 
+@router.get("/users/{user_id}/sessions", response_model=List[UserSessionInfo], status_code=status.HTTP_200_OK)
+async def get_user_sessions(user_id: int, db_pool=Depends(get_db_pool)):
+    if not db_pool:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
+
+    async with db_pool.acquire() as connection:
+        try:
+            query = """
+            SELECT session_id, updated_at, session_name AS title
+            FROM chat_sessions
+            WHERE user_id = $1 AND session_name IS NOT NULL
+            ORDER BY updated_at DESC;
+            """
+            records = await connection.fetch(query, user_id)
+            return [UserSessionInfo(session_id=r['session_id'], updated_at=r['updated_at'], title=r['title']) for r in records]
+        except Exception as e:
+            print(f"Error retrieving user sessions: {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+
 @router.get("/{session_id}", response_model=ChatSessionResponse, status_code=status.HTTP_200_OK)
 async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
     if not db_pool:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     async with db_pool.acquire() as connection:
         try:
-            result = await connection.fetchrow("SELECT session_id, session_name, persona_id, history FROM chat_sessions WHERE session_id = $1", session_id)
+            result = await connection.fetchrow("SELECT * FROM chat_sessions WHERE session_id = $1", session_id)
             if result:
                 history_data = result['history']
                 if isinstance(history_data, str):
@@ -91,6 +112,7 @@ async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
                     session_id=str(result['session_id']), 
                     session_name=result['session_name'], 
                     persona_id=result['persona_id'], 
+                    bot_version=result['bot_version'],
                     history=history_data
                 )
             else:
@@ -100,15 +122,18 @@ async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
 
 @router.post("/{session_id}/message", response_model=ChatSessionResponse, status_code=status.HTTP_200_OK)
-async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db_pool=Depends(get_db_pool)):
+async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, response: Response, db_pool=Depends(get_db_pool)):
     if not db_pool:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     async with db_pool.acquire() as connection:
         async with connection.transaction():
+            # --- Update Session Defaults if requested ---
             if request.persona_id is not None:
                 await connection.execute("UPDATE chat_sessions SET persona_id = $1 WHERE session_id = $2", request.persona_id, session_id)
+            if request.bot_version is not None:
+                await connection.execute("UPDATE chat_sessions SET bot_version = $1 WHERE session_id = $2", request.bot_version, session_id)
 
-            session_record = await connection.fetchrow("SELECT history, session_name, persona_id FROM chat_sessions WHERE session_id = $1", session_id)
+            session_record = await connection.fetchrow("SELECT * FROM chat_sessions WHERE session_id = $1", session_id)
             if not session_record:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat session with ID '{session_id}' not found.")
             
@@ -130,18 +155,15 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db
             
             system_instruction_override = None
             generation_config_override = None
-            bot_version_override = None
 
             if request.config:
                 config_dict = request.config.dict(exclude_unset=True)
                 if "system_instruction" in config_dict:
                     system_instruction_override = config_dict.pop("system_instruction")
-                if "bot_version" in config_dict:
-                    bot_version_override = config_dict.pop("bot_version")
                 generation_config_override = GenerationConfig(**config_dict)
 
             final_system_instruction = system_instruction_override if system_instruction_override is not None else default_system_prompt
-            final_bot_version = bot_version_override or GEMINI_MODEL_VERSION
+            final_bot_version = session_record.get('bot_version') or GEMINI_MODEL_VERSION
             
             try:
                 model = genai.GenerativeModel(final_bot_version, system_instruction=final_system_instruction)
@@ -162,11 +184,11 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db
                 gemini_history = [{"role": msg.role, "parts": [msg.content]} for msg in history]
 
                 chat = model.start_chat(history=[m for m in gemini_history[:-1]])
-                response = await chat.send_message_async(
+                response_obj = await chat.send_message_async(
                     content=gemini_history[-1]['parts'],
                     generation_config=generation_config_override
                 )
-                history.append(ChatMessage(role="model", content=response.text))
+                history.append(ChatMessage(role="model", content=response_obj.text))
 
             except google_exceptions.NotFound as e:
                 raise HTTPException(
@@ -194,6 +216,8 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db
             
             final_session_name = new_session_name if new_session_name is not None else session_record['session_name']
             
+            response.headers["X-Bot-Version"] = final_bot_version
+
             return ChatSessionResponse(
                 session_id=str(session_id), 
                 session_name=final_session_name, 
