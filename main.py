@@ -6,13 +6,13 @@ from api import personas, chat, users
 # Import the lifespan manager from the db directory
 from db.session import lifespan
 # Import the application version from the config
-from core.config import app_version
+from core.config import APP_VERSION
 
 # Initialize the FastAPI app with the lifespan manager and the dynamic version
 app = FastAPI(
     title="AI Chatbox API",
     description="Backend API for an AI Chatbox application with session management.",
-    version=app_version,
+    version=APP_VERSION,
     lifespan=lifespan
 )
 
@@ -35,4 +35,4 @@ app.include_router(users.router, prefix="/api/users", tags=["Users"])
 # A simple root endpoint to confirm the API is running
 @app.get("/", tags=["Root"])
 async def read_root():
-    return {"message": f"Welcome to the AI Chatbox API v{app_version}"}
+    return {"message": f"Welcome to the AI Chatbox API v{APP_VERSION}"}

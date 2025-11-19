@@ -4,6 +4,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# --- Application Version ---
+# This is the single source of truth for the application's version.
+APP_VERSION = "0.1.0-beta"
+
 # --- Constants ---
 MAX_CONVERSATION_TOKENS = 20000
 
