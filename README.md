@@ -19,6 +19,11 @@ These endpoints allow for the management of the AI personalities available in th
 -   **Success Response (200 OK)**: An array of `Persona` objects.
 -   **Example `curl`**: `curl -X GET "http://localhost:8000/api/personas" -H "accept: application/json"`
 
+### GET `/api/personas/{prompt_id}`
+-   **Purpose**: Retrieves a single, specific persona by its unique ID.
+-   **Success Response (200 OK)**: A single `Persona` object.
+-   **Example `curl`**: `curl -X GET "http://localhost:8000/api/personas/1" -H "accept: application/json"`
+
 ### POST `/api/personas`
 -   **Purpose**: Creates a new persona.
 -   **Request Body**: A `Persona` object. `role_name`, `goal`, `personality`, and `setting` are required.
@@ -65,11 +70,11 @@ These endpoints manage the lifecycle of a user's conversation.
     ```json
     {
       "user_id": 123,
-      "system_prompt": "You are a friendly and encouraging English teacher."
+      "persona_id": 1
     }
     ```
     - `user_id` (integer, optional): The ID of the user this session belongs to.
-    - `system_prompt` (string, optional): The default persona/instruction for the AI for the entire session.
+    - `persona_id` (integer, optional): The ID of the default persona for the session.
 -   **Success Response (201 Created)**: A `StartChatSessionResponse` object.
 
 ### POST `/api/chat/{session_id}/message`
@@ -79,20 +84,20 @@ These endpoints manage the lifecycle of a user's conversation.
     ```json
     {
       "message": "Please evaluate this paragraph about climate change.",
+      "persona_id": 2,
       "config": {
         "bot_version": "gemini-1.5-flash",
         "system_instruction": "You are an IELTS expert... Provide an estimated score.",
-        "temperature": 0.5,
-        "max_output_tokens": 800
+        "temperature": 0.5
       }
     }
     ```
     - `message` (string, required): The user's message.
+    - `persona_id` (integer, optional): If provided, **changes the default persona** for this session for all future messages.
     - `config` (object, optional): Overrides AI behavior for this specific request.
-        - `bot_version` (string, optional): Specifies the AI model to use (e.g., "gemini-1.5-flash"). Defaults to the server's configured model if omitted.
-        - `system_instruction` (string, optional): A temporary persona that overrides the session's default `system_prompt`.
-        - `temperature`, `max_output_tokens`, etc. (optional): Other AI generation parameters.
--   **Success Response (200 OK)**: A `ChatSessionResponse` object containing the full, updated history and the `bot_version` that was used.
+        - `bot_version` (string, optional): Specifies the AI model to use (e.g., "gemini-1.5-flash").
+        - `system_instruction` (string, optional): A temporary persona that overrides the session's default persona for this turn only.
+-   **Success Response (200 OK)**: A `ChatSessionResponse` object containing the full, updated history.
 
 ### GET `/api/chat/{session_id}`
 -   **Purpose**: Retrieves the full message history for one specific chat session.

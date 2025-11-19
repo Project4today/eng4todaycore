@@ -13,28 +13,61 @@ from models.chat import (
     StartChatSessionRequest,
     StartChatSessionResponse,
     ChatSessionResponse,
-    UserSessionInfo,
 )
+from models.persona import Persona
 from core.config import GEMINI_MODEL_VERSION, MAX_CONVERSATION_TOKENS
 
 router = APIRouter()
 
+def construct_system_prompt_from_persona(persona: Persona) -> str:
+    """Constructs a detailed system prompt string from a Persona object."""
+    if not persona:
+        return None
+    
+    p = dict(persona)
+    prompt = f"""
+# YOUR ROLE AND GOAL
+- Role: You are {p.get('role_name', 'an AI assistant')}.
+- Goal: {p.get('goal', 'To assist the user.')}
+- Expertise: {p.get('expertise', 'Not specified.')}
+
+# CORE CHARACTERISTICS
+- Personality: {p.get('personality', 'Standard AI personality.')}
+- Tone of Voice: {p.get('tone_of_voice', 'Normal.')}
+
+# CONTEXT
+- Setting: {p.get('setting', 'A digital chat interface.')}
+- Situation: {p.get('situation', 'A standard conversation.')}
+
+# RULES
+- MUST DO: {p.get('must_do_rules', 'Follow user instructions.')}
+- MUST NOT DO: {p.get('must_not_do_rules', 'Do not disclose you are an AI unless asked.')}
+
+# RESPONSE STRUCTURE
+- Length: {p.get('response_length', 'As needed.')}
+- Format: {p.get('response_format', 'Standard text.')}
+
+# STARTING INSTRUCTION
+- {p.get('starting_instruction', 'Start the conversation naturally.')}
+    """
+    return "\n".join([line.strip() for line in prompt.strip().splitlines()])
+
+
 @router.post("/start", response_model=StartChatSessionResponse, status_code=status.HTTP_201_CREATED)
-async def start_chat_session(request: StartChatSessionRequest = StartChatSessionRequest(), db_pool=Depends(get_db_pool)):
+async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(get_db_pool)):
     if not db_pool:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     
     async with db_pool.acquire() as connection:
         try:
             result = await connection.fetchrow(
-                "INSERT INTO chat_sessions (user_id, system_prompt, history) VALUES ($1, $2, '[]'::jsonb) RETURNING session_id, session_name, system_prompt, history",
-                request.user_id, request.system_prompt
+                "INSERT INTO chat_sessions (user_id, persona_id, history) VALUES ($1, $2, '[]'::jsonb) RETURNING session_id, persona_id",
+                request.user_id, request.persona_id
             )
             if result:
                 return StartChatSessionResponse(
                     session_id=str(result['session_id']), 
-                    session_name=result['session_name'], 
-                    system_prompt=result['system_prompt'], 
+                    persona_id=result['persona_id'],
                     history=[]
                 )
             else:
@@ -43,32 +76,13 @@ async def start_chat_session(request: StartChatSessionRequest = StartChatSession
             print(f"Error creating chat session: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
 
-@router.get("/users/{user_id}/sessions", response_model=List[UserSessionInfo], status_code=status.HTTP_200_OK)
-async def get_user_sessions(user_id: int, db_pool=Depends(get_db_pool)):
-    if not db_pool:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
-
-    async with db_pool.acquire() as connection:
-        try:
-            query = """
-            SELECT session_id, updated_at, session_name AS title
-            FROM chat_sessions
-            WHERE user_id = $1 AND session_name IS NOT NULL
-            ORDER BY updated_at DESC;
-            """
-            records = await connection.fetch(query, user_id)
-            return [UserSessionInfo(session_id=r['session_id'], updated_at=r['updated_at'], title=r['title']) for r in records]
-        except Exception as e:
-            print(f"Error retrieving user sessions: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
-
 @router.get("/{session_id}", response_model=ChatSessionResponse, status_code=status.HTTP_200_OK)
 async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
     if not db_pool:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     async with db_pool.acquire() as connection:
         try:
-            result = await connection.fetchrow("SELECT session_id, session_name, system_prompt, history FROM chat_sessions WHERE session_id = $1", session_id)
+            result = await connection.fetchrow("SELECT session_id, session_name, persona_id, history FROM chat_sessions WHERE session_id = $1", session_id)
             if result:
                 history_data = result['history']
                 if isinstance(history_data, str):
@@ -76,7 +90,7 @@ async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
                 return ChatSessionResponse(
                     session_id=str(result['session_id']), 
                     session_name=result['session_name'], 
-                    system_prompt=result['system_prompt'], 
+                    persona_id=result['persona_id'], 
                     history=history_data
                 )
             else:
@@ -91,10 +105,20 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     async with db_pool.acquire() as connection:
         async with connection.transaction():
-            session_record = await connection.fetchrow("SELECT history, session_name, system_prompt FROM chat_sessions WHERE session_id = $1", session_id)
+            if request.persona_id is not None:
+                await connection.execute("UPDATE chat_sessions SET persona_id = $1 WHERE session_id = $2", request.persona_id, session_id)
+
+            session_record = await connection.fetchrow("SELECT history, session_name, persona_id FROM chat_sessions WHERE session_id = $1", session_id)
             if not session_record:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat session with ID '{session_id}' not found.")
             
+            default_system_prompt = None
+            persona_id = session_record.get('persona_id')
+            if persona_id:
+                persona_record = await connection.fetchrow("SELECT * FROM personas WHERE prompt_id = $1", persona_id)
+                if persona_record:
+                    default_system_prompt = construct_system_prompt_from_persona(persona_record)
+
             history_data = session_record['history']
             if isinstance(history_data, str):
                 history_data = json.loads(history_data)
@@ -116,27 +140,27 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db
                     bot_version_override = config_dict.pop("bot_version")
                 generation_config_override = GenerationConfig(**config_dict)
 
-            final_system_instruction = system_instruction_override if system_instruction_override is not None else session_record.get('system_prompt')
+            final_system_instruction = system_instruction_override if system_instruction_override is not None else default_system_prompt
             final_bot_version = bot_version_override or GEMINI_MODEL_VERSION
             
             try:
                 model = genai.GenerativeModel(final_bot_version, system_instruction=final_system_instruction)
                 
-                gemini_history = [{"role": msg.role, "parts": [msg.content]} for msg in history]
-                
                 while True:
-                    total_tokens = await model.count_tokens_async(gemini_history)
+                    gemini_history_for_count = [{"role": msg.role, "parts": [msg.content]} for msg in history]
+                    total_tokens = await model.count_tokens_async(gemini_history_for_count)
+                    
                     if total_tokens.total_tokens <= MAX_CONVERSATION_TOKENS:
                         break
                     
                     print(f"Token count {total_tokens.total_tokens} exceeds limit. Truncating history...")
-                    if len(gemini_history) > 2:
-                        gemini_history = gemini_history[2:]
+                    if len(history) > 2:
+                        history = history[2:]
                     else:
                         break
                 
-                history = [ChatMessage(role=msg["role"], content=msg["parts"][0]) for msg in gemini_history]
-                
+                gemini_history = [{"role": msg.role, "parts": [msg.content]} for msg in history]
+
                 chat = model.start_chat(history=[m for m in gemini_history[:-1]])
                 response = await chat.send_message_async(
                     content=gemini_history[-1]['parts'],
@@ -173,7 +197,7 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, db
             return ChatSessionResponse(
                 session_id=str(session_id), 
                 session_name=final_session_name, 
-                system_prompt=final_system_instruction,
+                persona_id=persona_id,
                 bot_version=final_bot_version,
                 history=history
             )
