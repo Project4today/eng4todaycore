@@ -17,41 +17,43 @@ from models.chat import (
 )
 from models.persona import Persona
 from core.config import GEMINI_MODEL_VERSION, MAX_CONVERSATION_TOKENS, DEFAULT_POLLY_VOICE_ID
-from services.aws import get_or_create_audio_url, generate_audio_filename, get_s3_url
+from services.aws import get_or_create_audio_url, generate_audio_filename, get_presigned_url
 
 router = APIRouter()
 
 def construct_system_prompt_from_persona(persona: Persona) -> str:
-    # ... (omitted for brevity - no changes here)
+    """Constructs a detailed system prompt string from a Persona object."""
     if not persona:
         return None
+    
     p = dict(persona)
-    prompt = f"""
-# YOUR ROLE AND GOAL
-- Role: You are {p.get('role_name', 'an AI assistant')}.
-- Goal: {p.get('goal', 'To assist the user.')}
-- Expertise: {p.get('expertise', 'Not specified.')}
+    prompt_parts = [
+        "# YOUR ROLE AND GOAL",
+        f"- Role: You are {p.get('role_name', 'an AI assistant')}.",
+        f"- Goal: {p.get('goal', 'To assist the user.')}",
+        f"- Expertise: {p.get('expertise', 'Not specified.')}",
+        "",
+        "# CORE CHARACTERISTICS",
+        f"- Personality: {p.get('personality', 'Standard AI personality.')}",
+        f"- Tone of Voice: {p.get('tone_of_voice', 'Normal.')}",
+        "",
+        "# CONTEXT",
+        f"- Setting: {p.get('setting', 'A digital chat interface.')}",
+        f"- Situation: {p.get('situation', 'A standard conversation.')}",
+        "",
+        "# RULES",
+        f"- MUST DO: {p.get('must_do_rules', 'Follow user instructions.')}",
+        f"- MUST NOT DO: {p.get('must_not_do_rules', 'Do not disclose you are an AI unless asked.')}",
+        "",
+        "# RESPONSE STRUCTURE",
+        f"- Length: {p.get('response_length', 'As needed.')}",
+        f"- Format: {p.get('response_format', 'Standard text.')}",
+        "",
+        "# STARTING INSTRUCTION",
+        f"- {p.get('starting_instruction', 'Start the conversation naturally.')}"
+    ]
+    return "\n".join(prompt_parts)
 
-# CORE CHARACTERISTICS
-- Personality: {p.get('personality', 'Standard AI personality.')}
-- Tone of Voice: {p.get('tone_of_voice', 'Normal.')}
-
-# CONTEXT
-- Setting: {p.get('setting', 'A digital chat interface.')}
-- Situation: {p.get('situation', 'A standard conversation.')}
-
-# RULES
-- MUST DO: {p.get('must_do_rules', 'Follow user instructions.')}
-- MUST NOT DO: {p.get('must_not_do_rules', 'Do not disclose you are an AI unless asked.')}
-
-# RESPONSE STRUCTURE
-- Length: {p.get('response_length', 'As needed.')}
-- Format: {p.get('response_format', 'Standard text.')}
-
-# STARTING INSTRUCTION
-- {p.get('starting_instruction', 'Start the conversation naturally.')}
-    """
-    return "\n".join([line.strip() for line in prompt.strip().splitlines()])
 
 @router.post("/start", response_model=StartChatSessionResponse, status_code=status.HTTP_201_CREATED)
 async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(get_db_pool)):
@@ -60,6 +62,7 @@ async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(g
     
     async with db_pool.acquire() as connection:
         try:
+            # We no longer save bot_version at the start, it's session-based
             result = await connection.fetchrow(
                 "INSERT INTO chat_sessions (user_id, persona_id) VALUES ($1, $2) RETURNING session_id, persona_id",
                 request.user_id, request.persona_id
@@ -78,7 +81,6 @@ async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(g
 
 @router.get("/users/{user_id}/sessions", response_model=List[UserSessionInfo], status_code=status.HTTP_200_OK)
 async def get_user_sessions(user_id: int, db_pool=Depends(get_db_pool)):
-    # ... (omitted for brevity - no changes here)
     if not db_pool:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     async with db_pool.acquire() as connection:
@@ -104,7 +106,6 @@ async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
         if not session_record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat session with ID '{session_id}' not found.")
 
-        # Determine the voice for this session
         session_voice_id = DEFAULT_POLLY_VOICE_ID
         persona_id = session_record.get('persona_id')
         if persona_id:
@@ -116,12 +117,12 @@ async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
         if isinstance(history_data, str):
             history_data = json.loads(history_data)
         
-        # Enrich history with audio URLs
         enriched_history = []
-        for msg in history_data:
-            if msg.get("role") == "model":
-                filename = generate_audio_filename(msg["content"], session_voice_id)
-                msg["audio_url"] = get_s3_url(filename)
+        for msg_data in history_data:
+            msg = ChatMessage.parse_obj(msg_data)
+            if msg.role == "model":
+                filename = generate_audio_filename(msg.content, session_voice_id)
+                msg.audio_url = get_presigned_url(filename) # Generate fresh URL on-the-fly
             enriched_history.append(msg)
 
         return ChatSessionResponse(
@@ -145,7 +146,6 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
             if not session_record:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat session with ID '{session_id}' not found.")
             
-            # Determine voice and system prompt
             session_voice_id = DEFAULT_POLLY_VOICE_ID
             default_system_prompt = None
             persona_id = session_record.get('persona_id')
@@ -164,7 +164,6 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
             history = [ChatMessage.parse_obj(msg) for msg in history_data]
             history.append(ChatMessage(role="user", content=request.message))
             
-            # ... (Dynamic config logic remains the same)
             system_instruction_override = None
             generation_config_override = None
             if request.config:
@@ -179,7 +178,6 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
             try:
                 model = genai.GenerativeModel(final_bot_version, system_instruction=final_system_instruction)
                 
-                # ... (Token truncation logic remains the same)
                 while True:
                     gemini_history_for_count = [{"role": msg.role, "parts": [msg.content]} for msg in history]
                     total_tokens = await model.count_tokens_async(gemini_history_for_count)
@@ -196,7 +194,6 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
                 )
                 ai_text_response = response_obj.text
 
-                # --- Generate Audio for the new message ---
                 audio_url = await get_or_create_audio_url(ai_text_response, session_voice_id)
                 
                 history.append(ChatMessage(role="model", content=ai_text_response, audio_url=audio_url))
