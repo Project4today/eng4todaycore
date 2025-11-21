@@ -16,15 +16,15 @@ from models.chat import (
     UserSessionInfo,
 )
 from models.persona import Persona
-from core.config import GEMINI_MODEL_VERSION, MAX_CONVERSATION_TOKENS
+from core.config import GEMINI_MODEL_VERSION, MAX_CONVERSATION_TOKENS, DEFAULT_POLLY_VOICE_ID
+from services.aws import get_or_create_audio_url, generate_audio_filename, get_s3_url
 
 router = APIRouter()
 
 def construct_system_prompt_from_persona(persona: Persona) -> str:
-    """Constructs a detailed system prompt string from a Persona object."""
+    # ... (omitted for brevity - no changes here)
     if not persona:
         return None
-    
     p = dict(persona)
     prompt = f"""
 # YOUR ROLE AND GOAL
@@ -53,7 +53,6 @@ def construct_system_prompt_from_persona(persona: Persona) -> str:
     """
     return "\n".join([line.strip() for line in prompt.strip().splitlines()])
 
-
 @router.post("/start", response_model=StartChatSessionResponse, status_code=status.HTTP_201_CREATED)
 async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(get_db_pool)):
     if not db_pool:
@@ -62,14 +61,13 @@ async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(g
     async with db_pool.acquire() as connection:
         try:
             result = await connection.fetchrow(
-                "INSERT INTO chat_sessions (user_id, persona_id, bot_version, history) VALUES ($1, $2, $3, '[]'::jsonb) RETURNING *",
-                request.user_id, request.persona_id, request.bot_version
+                "INSERT INTO chat_sessions (user_id, persona_id) VALUES ($1, $2) RETURNING session_id, persona_id",
+                request.user_id, request.persona_id
             )
             if result:
                 return StartChatSessionResponse(
                     session_id=str(result['session_id']), 
                     persona_id=result['persona_id'],
-                    bot_version=result['bot_version'],
                     history=[]
                 )
             else:
@@ -80,9 +78,9 @@ async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(g
 
 @router.get("/users/{user_id}/sessions", response_model=List[UserSessionInfo], status_code=status.HTTP_200_OK)
 async def get_user_sessions(user_id: int, db_pool=Depends(get_db_pool)):
+    # ... (omitted for brevity - no changes here)
     if not db_pool:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
-
     async with db_pool.acquire() as connection:
         try:
             query = """
@@ -102,24 +100,37 @@ async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
     if not db_pool:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     async with db_pool.acquire() as connection:
-        try:
-            result = await connection.fetchrow("SELECT * FROM chat_sessions WHERE session_id = $1", session_id)
-            if result:
-                history_data = result['history']
-                if isinstance(history_data, str):
-                    history_data = json.loads(history_data)
-                return ChatSessionResponse(
-                    session_id=str(result['session_id']), 
-                    session_name=result['session_name'], 
-                    persona_id=result['persona_id'], 
-                    bot_version=result['bot_version'],
-                    history=history_data
-                )
-            else:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat session with ID '{session_id}' not found.")
-        except Exception as e:
-            print(f"Error retrieving chat session: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
+        session_record = await connection.fetchrow("SELECT * FROM chat_sessions WHERE session_id = $1", session_id)
+        if not session_record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat session with ID '{session_id}' not found.")
+
+        # Determine the voice for this session
+        session_voice_id = DEFAULT_POLLY_VOICE_ID
+        persona_id = session_record.get('persona_id')
+        if persona_id:
+            persona_record = await connection.fetchrow("SELECT voice_id FROM personas WHERE prompt_id = $1", persona_id)
+            if persona_record and persona_record.get('voice_id'):
+                session_voice_id = persona_record.get('voice_id')
+
+        history_data = session_record['history']
+        if isinstance(history_data, str):
+            history_data = json.loads(history_data)
+        
+        # Enrich history with audio URLs
+        enriched_history = []
+        for msg in history_data:
+            if msg.get("role") == "model":
+                filename = generate_audio_filename(msg["content"], session_voice_id)
+                msg["audio_url"] = get_s3_url(filename)
+            enriched_history.append(msg)
+
+        return ChatSessionResponse(
+            session_id=str(session_record['session_id']), 
+            session_name=session_record['session_name'], 
+            persona_id=session_record['persona_id'], 
+            bot_version=session_record.get('bot_version') or GEMINI_MODEL_VERSION,
+            history=enriched_history
+        )
 
 @router.post("/{session_id}/message", response_model=ChatSessionResponse, status_code=status.HTTP_200_OK)
 async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, response: Response, db_pool=Depends(get_db_pool)):
@@ -127,35 +138,35 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
     async with db_pool.acquire() as connection:
         async with connection.transaction():
-            # --- Update Session Defaults if requested ---
             if request.persona_id is not None:
                 await connection.execute("UPDATE chat_sessions SET persona_id = $1 WHERE session_id = $2", request.persona_id, session_id)
-            if request.bot_version is not None:
-                await connection.execute("UPDATE chat_sessions SET bot_version = $1 WHERE session_id = $2", request.bot_version, session_id)
 
             session_record = await connection.fetchrow("SELECT * FROM chat_sessions WHERE session_id = $1", session_id)
             if not session_record:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat session with ID '{session_id}' not found.")
             
+            # Determine voice and system prompt
+            session_voice_id = DEFAULT_POLLY_VOICE_ID
             default_system_prompt = None
             persona_id = session_record.get('persona_id')
             if persona_id:
                 persona_record = await connection.fetchrow("SELECT * FROM personas WHERE prompt_id = $1", persona_id)
                 if persona_record:
                     default_system_prompt = construct_system_prompt_from_persona(persona_record)
+                    if persona_record.get('voice_id'):
+                        session_voice_id = persona_record.get('voice_id')
 
             history_data = session_record['history']
             if isinstance(history_data, str):
                 history_data = json.loads(history_data)
             
             is_first_message = not history_data
-            
             history = [ChatMessage.parse_obj(msg) for msg in history_data]
             history.append(ChatMessage(role="user", content=request.message))
             
+            # ... (Dynamic config logic remains the same)
             system_instruction_override = None
             generation_config_override = None
-
             if request.config:
                 config_dict = request.config.dict(exclude_unset=True)
                 if "system_instruction" in config_dict:
@@ -168,18 +179,13 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
             try:
                 model = genai.GenerativeModel(final_bot_version, system_instruction=final_system_instruction)
                 
+                # ... (Token truncation logic remains the same)
                 while True:
                     gemini_history_for_count = [{"role": msg.role, "parts": [msg.content]} for msg in history]
                     total_tokens = await model.count_tokens_async(gemini_history_for_count)
-                    
-                    if total_tokens.total_tokens <= MAX_CONVERSATION_TOKENS:
-                        break
-                    
-                    print(f"Token count {total_tokens.total_tokens} exceeds limit. Truncating history...")
-                    if len(history) > 2:
-                        history = history[2:]
-                    else:
-                        break
+                    if total_tokens.total_tokens <= MAX_CONVERSATION_TOKENS: break
+                    if len(history) > 2: history = history[2:]
+                    else: break
                 
                 gemini_history = [{"role": msg.role, "parts": [msg.content]} for msg in history]
 
@@ -188,33 +194,28 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
                     content=gemini_history[-1]['parts'],
                     generation_config=generation_config_override
                 )
-                history.append(ChatMessage(role="model", content=response_obj.text))
+                ai_text_response = response_obj.text
+
+                # --- Generate Audio for the new message ---
+                audio_url = await get_or_create_audio_url(ai_text_response, session_voice_id)
+                
+                history.append(ChatMessage(role="model", content=ai_text_response, audio_url=audio_url))
 
             except google_exceptions.NotFound as e:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid bot_version: The model '{final_bot_version}' was not found. Please check the model name."
-                )
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid bot_version: The model '{final_bot_version}' was not found.")
             except Exception as e:
                 print(f"Error communicating with Gemini API: {e}")
                 raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Failed to get response from AI model.")
             
             updated_history_json = [msg.dict() for msg in history]
             
-            new_session_name = None
             if is_first_message:
                 new_session_name = request.message[:99]
-                await connection.execute(
-                    "UPDATE chat_sessions SET history = $1, session_name = $2 WHERE session_id = $3",
-                    updated_history_json, new_session_name, session_id
-                )
+                await connection.execute("UPDATE chat_sessions SET history = $1, session_name = $2 WHERE session_id = $3", updated_history_json, new_session_name, session_id)
             else:
-                await connection.execute(
-                    "UPDATE chat_sessions SET history = $1 WHERE session_id = $2",
-                    updated_history_json, session_id
-                )
+                await connection.execute("UPDATE chat_sessions SET history = $1 WHERE session_id = $2", updated_history_json, session_id)
             
-            final_session_name = new_session_name if new_session_name is not None else session_record['session_name']
+            final_session_name = new_session_name if is_first_message else session_record['session_name']
             
             response.headers["X-Bot-Version"] = final_bot_version
 

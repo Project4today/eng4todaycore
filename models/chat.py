@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 class ChatMessage(BaseModel):
     role: str
     content: str
+    audio_url: Optional[str] = None # ADDED: To hold the S3 URL for the audio
 
 class GenerationConfigModel(BaseModel):
     temperature: Optional[float] = None
@@ -14,25 +15,20 @@ class GenerationConfigModel(BaseModel):
     candidate_count: Optional[int] = None
     max_output_tokens: Optional[int] = None
     system_instruction: Optional[str] = None
-    # bot_version is now a session-level property, not a per-request config
-    # bot_version: Optional[str] = None 
 
 class MessageRequest(BaseModel):
     message: str = Field(..., min_length=1)
     persona_id: Optional[int] = None
-    bot_version: Optional[str] = None # ADDED: To change the session's default bot version
     config: Optional[GenerationConfigModel] = None
 
 class StartChatSessionRequest(BaseModel):
     user_id: Optional[int] = None
     persona_id: Optional[int] = None
-    bot_version: Optional[str] = None # ADDED: To set the bot version at the start
 
 class StartChatSessionResponse(BaseModel):
     session_id: str
     session_name: Optional[str] = None
     persona_id: Optional[int] = None
-    bot_version: Optional[str] = None # ADDED
     history: List[ChatMessage] = Field(default_factory=list)
 
 class ChatSessionResponse(BaseModel):
