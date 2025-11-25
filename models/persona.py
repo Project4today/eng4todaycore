@@ -6,6 +6,7 @@ class Persona(BaseModel):
     prompt_id: Optional[int] = None
     role_name: str
     avatar_url: Optional[str] = None
+    voice_id: Optional[str] = None  # ADDED: The missing field
     default_language: Optional[str] = 'English'
     goal: str
     personality: str
