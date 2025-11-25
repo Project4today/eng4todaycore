@@ -22,36 +22,56 @@ from services.aws import get_or_create_audio_url, generate_audio_filename, get_p
 router = APIRouter()
 
 def construct_system_prompt_from_persona(persona: Persona) -> str:
-    """Constructs a detailed system prompt string from a Persona object."""
+    """Constructs a detailed system prompt for the AI to act as an expert voice director."""
     if not persona:
         return None
     
     p = dict(persona)
+    
+    # Advanced instructions using a robust delimiter-based format.
+    ssml_instructions = """
+### SSML Generation Mandate
+You are an expert SSML generator for Amazon Polly's Neural Engine. Your goal is "Human-Like Naturalness", avoiding robotic artifacts at all costs.
+
+### I. STRICT RULES (To avoid "Fake" sounding audio)
+1.  **NO PITCH:** Do not use the `pitch` attribute in `<prosody>`. It sounds artificial on Neural voices.
+2.  **NO LONG FAST SEGMENTS:** Never apply `rate="fast"` (or >100%) to sentences longer than 7 words. Fast speech must be "bursts" only.
+3.  **NO UNSUPPORTED TAGS:** Do not use `<emphasis>`, `whispered` effect, or `vocal-tract-length`.
+
+### II. ADVANCED HUMANIZATION STRATEGIES
+1.  **The "Anti-Robot" Fast Rule (Urgency):** Use `<prosody rate="fast">` only for short interjections (e.g., "Hurry!").
+2.  **Fixing "Flat" Low Tones (Intimacy & Depth):** Use `<amazon:effect name="drc">` to add richness. Use `...` in your text to signal a natural drop in intonation.
+3.  **Punctuation over Tags (Natural Breathing):** Rely on commas and periods for natural pauses. Use `<break strength="medium"/>` only for deliberate, longer pauses.
+
+### III. FINAL INSTRUCTION
+Your response MUST be in two parts, separated by a unique delimiter.
+
+[DISPLAY_TEXT]
+(Your clean, plain text response for the UI goes here. This part should not contain any SSML tags.)
+
+[SSML_TEXT]
+(Your full SSML response, enclosed in `<speak>` tags, goes here. This part contains all the performance tags.)
+
+**EXAMPLE:**
+[DISPLAY_TEXT]
+Oh no! I forgot the keys. Wait... let me check my bag.
+
+[SSML_TEXT]
+<speak><amazon:effect name="drc"><prosody rate="fast">Oh no!</prosody> I forgot the keys. <break strength="medium"/> Wait... <prosody rate="105%">let me check my bag.</prosody></amazon:effect></speak>
+"""
+
     prompt_parts = [
         "# YOUR ROLE AND GOAL",
         f"- Role: You are {p.get('role_name', 'an AI assistant')}.",
         f"- Goal: {p.get('goal', 'To assist the user.')}",
-        f"- Expertise: {p.get('expertise', 'Not specified.')}",
         "",
         "# CORE CHARACTERISTICS",
         f"- Personality: {p.get('personality', 'Standard AI personality.')}",
-        f"- Tone of Voice: {p.get('tone_of_voice', 'Normal.')}",
         "",
-        "# CONTEXT",
-        f"- Setting: {p.get('setting', 'A digital chat interface.')}",
-        f"- Situation: {p.get('situation', 'A standard conversation.')}",
-        "",
-        "# RULES",
-        f"- MUST DO: {p.get('must_do_rules', 'Follow user instructions.')}",
-        f"- MUST NOT DO: {p.get('must_not_do_rules', 'Do not disclose you are an AI unless asked.')}",
-        "",
-        "# RESPONSE STRUCTURE",
-        f"- Length: {p.get('response_length', 'As needed.')}",
-        f"- Format: {p.get('response_format', 'Standard text.')}",
-        "",
-        "# STARTING INSTRUCTION",
-        f"- {p.get('starting_instruction', 'Start the conversation naturally.')}"
+        "# RESPONSE FORMAT AND SSML RULES",
+        ssml_instructions.strip(),
     ]
+    
     return "\n".join(prompt_parts)
 
 
@@ -62,39 +82,21 @@ async def start_chat_session(request: StartChatSessionRequest, db_pool=Depends(g
     
     async with db_pool.acquire() as connection:
         try:
-            # We no longer save bot_version at the start, it's session-based
             result = await connection.fetchrow(
-                "INSERT INTO chat_sessions (user_id, persona_id) VALUES ($1, $2) RETURNING session_id, persona_id",
-                request.user_id, request.persona_id
+                "INSERT INTO chat_sessions (user_id, persona_id, bot_version) VALUES ($1, $2, $3) RETURNING *",
+                request.user_id, request.persona_id, request.bot_version
             )
             if result:
                 return StartChatSessionResponse(
                     session_id=str(result['session_id']), 
                     persona_id=result['persona_id'],
+                    bot_version=result['bot_version'],
                     history=[]
                 )
             else:
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create chat session.")
         except Exception as e:
             print(f"Error creating chat session: {e}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
-
-@router.get("/users/{user_id}/sessions", response_model=List[UserSessionInfo], status_code=status.HTTP_200_OK)
-async def get_user_sessions(user_id: int, db_pool=Depends(get_db_pool)):
-    if not db_pool:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database connection is not available.")
-    async with db_pool.acquire() as connection:
-        try:
-            query = """
-            SELECT session_id, updated_at, session_name AS title
-            FROM chat_sessions
-            WHERE user_id = $1 AND session_name IS NOT NULL
-            ORDER BY updated_at DESC;
-            """
-            records = await connection.fetch(query, user_id)
-            return [UserSessionInfo(session_id=r['session_id'], updated_at=r['updated_at'], title=r['title']) for r in records]
-        except Exception as e:
-            print(f"Error retrieving user sessions: {e}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error.")
 
 @router.get("/{session_id}", response_model=ChatSessionResponse, status_code=status.HTTP_200_OK)
@@ -105,14 +107,12 @@ async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
         session_record = await connection.fetchrow("SELECT * FROM chat_sessions WHERE session_id = $1", session_id)
         if not session_record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat session with ID '{session_id}' not found.")
-
         session_voice_id = DEFAULT_POLLY_VOICE_ID
         persona_id = session_record.get('persona_id')
         if persona_id:
             persona_record = await connection.fetchrow("SELECT voice_id FROM personas WHERE prompt_id = $1", persona_id)
             if persona_record and persona_record.get('voice_id'):
                 session_voice_id = persona_record.get('voice_id')
-
         history_data = session_record['history']
         if isinstance(history_data, str):
             history_data = json.loads(history_data)
@@ -121,10 +121,10 @@ async def get_chat_history(session_id: uuid.UUID, db_pool=Depends(get_db_pool)):
         for msg_data in history_data:
             msg = ChatMessage.parse_obj(msg_data)
             if msg.role == "model":
-                filename = generate_audio_filename(msg.content, session_voice_id)
-                msg.audio_url = get_presigned_url(filename) # Generate fresh URL on-the-fly
+                text_for_audio = msg.ssml or msg.content
+                filename = generate_audio_filename(text_for_audio, session_voice_id)
+                msg.audio_url = get_presigned_url(filename)
             enriched_history.append(msg)
-
         return ChatSessionResponse(
             session_id=str(session_record['session_id']), 
             session_name=session_record['session_name'], 
@@ -141,6 +141,8 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
         async with connection.transaction():
             if request.persona_id is not None:
                 await connection.execute("UPDATE chat_sessions SET persona_id = $1 WHERE session_id = $2", request.persona_id, session_id)
+            if request.bot_version is not None:
+                await connection.execute("UPDATE chat_sessions SET bot_version = $1 WHERE session_id = $2", request.bot_version, session_id)
 
             session_record = await connection.fetchrow("SELECT * FROM chat_sessions WHERE session_id = $1", session_id)
             if not session_record:
@@ -192,11 +194,36 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
                     content=gemini_history[-1]['parts'],
                     generation_config=generation_config_override
                 )
-                ai_text_response = response_obj.text
+                ai_response_raw = response_obj.text
 
-                audio_url = await get_or_create_audio_url(ai_text_response, session_voice_id)
+                display_text = ai_response_raw
+                ssml_text = None
+                text_for_audio = display_text
+                text_type_for_audio = 'text'
+
+                # --- NEW: Robust parsing using delimiters ---
+                if "[SSML_TEXT]" in ai_response_raw:
+                    parts = ai_response_raw.split("[SSML_TEXT]", 1)
+                    display_text_part = parts[0].replace("[DISPLAY_TEXT]", "").strip()
+                    ssml_text_part = parts[1].strip()
+
+                    if display_text_part and ssml_text_part:
+                        display_text = display_text_part
+                        ssml_text = ssml_text_part
+                        text_for_audio = ssml_text
+                        text_type_for_audio = 'ssml'
+                        print("--- AI Response Analysis ---")
+                        print(f"Raw AI Response: {ai_response_raw}")
+                        print("SSML PARSED SUCCESSFULLY using delimiter.")
+                        print("--------------------------")
+                    else:
+                        print(f"WARNING: AI used delimiter but parts were empty. Falling back. Raw: {ai_response_raw}")
+                else:
+                    print(f"WARNING: AI did not use delimiter. Falling back. Raw: {ai_response_raw}")
+
+                audio_url = await get_or_create_audio_url(text_for_audio, session_voice_id, text_type_for_audio)
                 
-                history.append(ChatMessage(role="model", content=ai_text_response, audio_url=audio_url))
+                history.append(ChatMessage(role="model", content=display_text, ssml=ssml_text, audio_url=audio_url))
 
             except google_exceptions.NotFound as e:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid bot_version: The model '{final_bot_version}' was not found.")

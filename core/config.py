@@ -8,7 +8,7 @@ load_dotenv()
 APP_VERSION = "0.2.0-beta" # Bump version for Polly integration
 
 # --- Constants ---
-MAX_CONVERSATION_TOKENS = 20000
+MAX_CONVERSATION_TOKENS = 100000
 
 # --- API Key and Model Configuration ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")

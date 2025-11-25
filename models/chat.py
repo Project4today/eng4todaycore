@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 class ChatMessage(BaseModel):
     role: str
     content: str
-    audio_url: Optional[str] = None # ADDED: To hold the S3 URL for the audio
+    ssml: Optional[str] = None # ADDED: To store the SSML for audio generation
+    audio_url: Optional[str] = None
 
 class GenerationConfigModel(BaseModel):
     temperature: Optional[float] = None
@@ -19,16 +20,19 @@ class GenerationConfigModel(BaseModel):
 class MessageRequest(BaseModel):
     message: str = Field(..., min_length=1)
     persona_id: Optional[int] = None
+    bot_version: Optional[str] = None
     config: Optional[GenerationConfigModel] = None
 
 class StartChatSessionRequest(BaseModel):
     user_id: Optional[int] = None
     persona_id: Optional[int] = None
+    bot_version: Optional[str] = None
 
 class StartChatSessionResponse(BaseModel):
     session_id: str
     session_name: Optional[str] = None
     persona_id: Optional[int] = None
+    bot_version: Optional[str] = None
     history: List[ChatMessage] = Field(default_factory=list)
 
 class ChatSessionResponse(BaseModel):

@@ -43,11 +43,11 @@ def get_presigned_url(file_name: str) -> str:
         print(f"Error generating pre-signed URL: {e}")
         return None
 
-async def get_or_create_audio_url(text: str, voice_id: str) -> str:
+async def get_or_create_audio_url(text: str, voice_id: str, text_type: str = 'text') -> str:
     """
     Handles the "write-through" cache.
     Checks S3 for an existing file; if not found, generates it with Polly and uploads.
-    Finally, returns a fresh pre-signed URL for the object.
+    Returns a fresh pre-signed URL only if the object exists or was successfully created.
     """
     if not all([polly_client, s3_client, S3_BUCKET_NAME]):
         print("AWS service is not configured. Skipping audio generation.")
@@ -63,13 +63,17 @@ async def get_or_create_audio_url(text: str, voice_id: str) -> str:
         # Check if the file already exists in S3
         s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=filename)
         print(f"Cache HIT: Found audio file {filename} in S3.")
+        # If it exists, we can proceed to generate the URL at the end.
+    
     except ClientError as e:
+        # If the error is 404, the file doesn't exist, so we create it.
         if e.response['Error']['Code'] == '404':
             print(f"Cache MISS: File {filename} not in S3. Generating with Polly...")
             try:
                 # Synthesize speech with Polly
                 response = polly_client.synthesize_speech(
                     Text=clean_text,
+                    TextType=text_type,
                     OutputFormat="mp3",
                     VoiceId=voice_id,
                     Engine="neural"
@@ -83,13 +87,17 @@ async def get_or_create_audio_url(text: str, voice_id: str) -> str:
                     ContentType="audio/mpeg"
                 )
                 print(f"SUCCESS: Uploaded {filename} to S3.")
+                # Since creation was successful, we can now generate the URL.
             except Exception as polly_error:
                 print(f"ERROR: Failed to generate or upload audio: {polly_error}")
+                # CRITICAL: If creation fails, return None immediately.
                 return None
         else:
-            # Handle other S3 errors (like the 403 Forbidden we saw before)
+            # Handle other S3 errors (like 403 Forbidden)
             print(f"ERROR: An S3 error occurred on head_object: {e}")
+            # CRITICAL: If we can't check S3, we can't proceed.
             return None
             
-    # Always generate a fresh pre-signed URL for the client
+    # This line is now only reached if the object is confirmed to exist on S3
+    # (either because it was already there or because we just uploaded it).
     return get_presigned_url(filename)
