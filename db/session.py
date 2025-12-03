@@ -12,7 +12,7 @@ async def _init_connection(connection):
     """Initialize each new database connection by setting the JSONB codec."""
     await connection.set_type_codec(
         'jsonb',
-        encoder=json.dumps,
+        encoder=lambda v: json.dumps(v, ensure_ascii=False),
         decoder=json.loads,
         schema='pg_catalog'
     )
