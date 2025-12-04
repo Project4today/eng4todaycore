@@ -1,15 +1,16 @@
-name: CD - Deploy to ECS
+name: 2. CD - Deploy to ECS (Manual)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Chạy bằng cơm (Bấm nút)
 
 jobs:
   deploy:
     name: Deploy to ECS
     runs-on: ubuntu-latest
+    environment: production
 
     steps:
-      - name: Configure AWS Credentials
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -20,25 +21,40 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Lấy bản Task Definition MỚI NHẤT (Active) từ AWS về
       - name: Download latest Task Definition
         run: |
+          # Bước 1: Lấy ARN của Task đang chạy trên Service
           CURRENT_TASK_ARN=$(aws ecs describe-services --cluster ${{ secrets.ECS_CLUSTER }} --services ${{ secrets.ECS_SERVICE }} --query "services[0].taskDefinition" --output text)
+
+          # Bước 2: Lấy tên Family từ ARN đó
           TASK_FAMILY=$(aws ecs describe-task-definition --task-definition $CURRENT_TASK_ARN --query "taskDefinition.family" --output text)
+
+          # Bước 3: Tải bản Task Definition MỚI NHẤT của Family đó về
           aws ecs describe-task-definition --task-definition $TASK_FAMILY --query taskDefinition | \
             jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .enableFaultInjection)' > task-definition.json
 
-      - name: Render new Task Definition
-        id: render-task-def
+      # Cập nhật Image mới và BƠM THÊM BIẾN MÔI TRƯỜNG (Polly Key)
+      - name: Update Image & Env in Task Definition
+        id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
           container-name: ${{ secrets.CONTAINER_NAME }}
+          # Lấy ảnh latest vừa build từ bên CI
           image: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
+          # 👇 ĐÂY LÀ PHẦN QUAN TRỌNG ĐỂ FIX LỖI POLLY 👇
+          environment-variables: |
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
+            AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+            AWS_REGION=${{ secrets.AWS_REGION }}
+            # Thêm các biến khác nếu cần (ví dụ S3_BUCKET_NAME)
 
-      - name: Deploy to ECS
+      - name: Deploy to ECS Service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
         with:
-          task-definition: ${{ steps.render-task-def.outputs.task-definition }}
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ secrets.ECS_SERVICE }}
           cluster: ${{ secrets.ECS_CLUSTER }}
           wait-for-service-stability: true
