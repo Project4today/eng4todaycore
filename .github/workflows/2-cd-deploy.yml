@@ -25,8 +25,8 @@ jobs:
           # Get the current task definition ARN from the service
           TASK_DEF_ARN=$(aws ecs describe-services --cluster ${{ secrets.ECS_CLUSTER }} --services ${{ secrets.ECS_SERVICE }} --query "services[0].taskDefinition" --output text)
 
-          # Download the task definition
-          aws ecs describe-task-definition --task-definition $TASK_DEF_ARN --query taskDefinition > task-definition.json
+          aws ecs describe-task-definition --task-definition $TASK_DEF_ARN --query taskDefinition | \
+            jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .enableFaultInjection)' > task-definition.json
 
       - name: Render new Task Definition
         id: render-task-def
