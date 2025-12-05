@@ -20,12 +20,13 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Download latest Task Definition
+      - name: Download current Task Definition
         run: |
-          CURRENT_TASK_ARN=$(aws ecs describe-services --cluster ${{ secrets.ECS_CLUSTER }} --services ${{ secrets.ECS_SERVICE }} --query "services[0].taskDefinition" --output text)
-          TASK_FAMILY=$(aws ecs describe-task-definition --task-definition $CURRENT_TASK_ARN --query "taskDefinition.family" --output text)
-          aws ecs describe-task-definition --task-definition $TASK_FAMILY --query taskDefinition | \
-            jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy, .enableFaultInjection)' > task-definition.json
+          # Get the current task definition ARN from the service
+          TASK_DEF_ARN=$(aws ecs describe-services --cluster ${{ secrets.ECS_CLUSTER }} --services ${{ secrets.ECS_SERVICE }} --query "services[0].taskDefinition" --output text)
+
+          # Download the task definition
+          aws ecs describe-task-definition --task-definition $TASK_DEF_ARN --query taskDefinition > task-definition.json
 
       - name: Render new Task Definition
         id: render-task-def
