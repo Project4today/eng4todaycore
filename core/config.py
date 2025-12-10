@@ -1,5 +1,6 @@
 import os
 import json
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -29,7 +30,9 @@ if APP_ENV:
         db_name = app_env_json.get("DB_NAME")
 
         if all([db_user, db_password, db_host, db_port, db_name]):
-            DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+            encoded_user = quote_plus(str(db_user))
+            encoded_password = quote_plus(str(db_password))
+            DATABASE_URL = f"postgresql://{encoded_user}:{encoded_password}@{db_host}:{db_port}/{db_name}"
             print(f"INFO: Configured DATABASE_URL from APP_ENV for host: {db_host}")
         else:
              print("WARNING: APP_ENV present but missing one or more DB fields (DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME).")
