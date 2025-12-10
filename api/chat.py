@@ -1,11 +1,12 @@
 import json
-from typing import List
 import uuid
-import google.generativeai as genai
-from google.generativeai.types import GenerationConfig
-from google.api_core import exceptions as google_exceptions
-from fastapi import APIRouter, HTTPException, status, Depends, Response
 
+import google.generativeai as genai
+from fastapi import APIRouter, HTTPException, status, Depends, Response
+from google.api_core import exceptions as google_exceptions
+from google.generativeai.types import GenerationConfig
+
+from core.config import GEMINI_MODEL_VERSION, MAX_CONVERSATION_TOKENS, DEFAULT_POLLY_VOICE_ID
 from db.session import get_db_pool
 from models.chat import (
     ChatMessage,
@@ -13,10 +14,8 @@ from models.chat import (
     StartChatSessionRequest,
     StartChatSessionResponse,
     ChatSessionResponse,
-    UserSessionInfo,
 )
 from models.persona import Persona
-from core.config import GEMINI_MODEL_VERSION, MAX_CONVERSATION_TOKENS, DEFAULT_POLLY_VOICE_ID
 from services.aws import get_or_create_audio_url, generate_audio_filename, get_presigned_url
 
 router = APIRouter()
