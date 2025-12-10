@@ -13,7 +13,7 @@ load_dotenv()
 # This is the core of the new system.
 
 # Check if we are in a cloud environment by looking for the secret ARN.
-APP_ENV_SECRET_ARN = os.getenv("arn:aws:secretsmanager:us-east-1:155290703087:secret:eng4today/dev/app-env-68508fbb-8upc9h")
+APP_ENV_SECRET_ARN = os.getenv("APP_ENV")
 
 if APP_ENV_SECRET_ARN:
     print("Cloud environment detected. Fetching secrets from AWS Secrets Manager...")
