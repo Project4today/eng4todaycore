@@ -1,4 +1,5 @@
 import os
+import json
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -16,6 +17,26 @@ GEMINI_MODEL_VERSION = os.getenv("GEMINI_MODEL_VERSION", "gemini-1.5-pro")
 
 # --- Database Configuration ---
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+APP_ENV = os.getenv("APP_ENV")
+if APP_ENV:
+    try:
+        app_env_json = json.loads(APP_ENV)
+        db_user = app_env_json.get("DB_USER")
+        db_password = app_env_json.get("DB_PASSWORD")
+        db_host = app_env_json.get("DB_HOST")
+        db_port = app_env_json.get("DB_PORT")
+        db_name = app_env_json.get("DB_NAME")
+
+        if all([db_user, db_password, db_host, db_port, db_name]):
+            DATABASE_URL = f"postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}"
+            print(f"INFO: Configured DATABASE_URL from APP_ENV for host: {db_host}")
+        else:
+             print("WARNING: APP_ENV present but missing one or more DB fields (DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME).")
+    except json.JSONDecodeError:
+        print("WARNING: APP_ENV is not a valid JSON string.")
+    except Exception as e:
+        print(f"WARNING: Failed to parse APP_ENV: {e}")
 
 # --- AWS Configuration ---
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
