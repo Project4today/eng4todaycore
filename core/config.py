@@ -1,4 +1,6 @@
 import os
+import json
+from urllib.parse import quote_plus
 from dotenv import load_dotenv
 from .secrets_manager import get_secret
 
@@ -40,12 +42,34 @@ else:
     print("Local development environment detected. Loading from .env file...")
     # We are running locally, load all variables from the .env file.
 
-    # --- Database Configuration (from .env) ---
-    DB_HOST = os.getenv("DB_HOST")
-    DB_PORT = os.getenv("DB_PORT")
-    DB_USER = os.getenv("DB_USER")
-    DB_PASSWORD = os.getenv("DB_PASSWORD")
-    DB_NAME = os.getenv("DB_NAME")
+APP_ENV = os.getenv("APP_ENV")
+if APP_ENV:
+    try:
+        app_env_json = json.loads(APP_ENV)
+        db_user = app_env_json.get("DB_USER")
+        db_password = app_env_json.get("DB_PASSWORD")
+        db_host = app_env_json.get("DB_HOST")
+        db_port = app_env_json.get("DB_PORT")
+        db_name = app_env_json.get("DB_NAME")
+
+        if all([db_user, db_password, db_host, db_port, db_name]):
+            encoded_user = quote_plus(str(db_user))
+            encoded_password = quote_plus(str(db_password))
+            DATABASE_URL = f"postgresql://{encoded_user}:{encoded_password}@{db_host}:{db_port}/{db_name}"
+            print(f"INFO: Configured DATABASE_URL from APP_ENV for host: {db_host}")
+        else:
+             print("WARNING: APP_ENV present but missing one or more DB fields (DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME).")
+    except json.JSONDecodeError:
+        print("WARNING: APP_ENV is not a valid JSON string.")
+    except Exception as e:
+        print(f"WARNING: Failed to parse APP_ENV: {e}")
+
+# --- AWS Configuration ---
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+DEFAULT_POLLY_VOICE_ID = os.getenv("DEFAULT_POLLY_VOICE_ID", "Joanna")
 
     # --- AWS Service Configuration (from .env) ---
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
