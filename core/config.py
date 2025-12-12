@@ -29,7 +29,9 @@ for var_name in required_vars:
 print("--- [END] CHECKING ENVIRONMENT VARIABLES ---\n", flush=True)
 
 # --- 2. DATABASE CONFIGURATION ---
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = f"postgresql://{os.getenv("DB_USER")}:{os.getenv("DB_PASSWORD")}@{os.getenv("DB_HOST")}:{os.getenv("DB_PORT")}/{os.getenv("DB_NAME")}"
+safe_url = f"postgresql://*******:******@{os.getenv("DB_HOST")}:{os.getenv("DB_PORT")}/{os.getenv("DB_NAME")}"
+print(f"INFO: Constructed DATABASE_URL: {safe_url}")
 
 # Nếu chưa có DATABASE_URL nhưng đủ các biến thành phần thì tự construct
 if not DATABASE_URL and not missing_vars:
