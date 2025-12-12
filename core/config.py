@@ -4,7 +4,7 @@ from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 # --- Application Version ---
-APP_VERSION = "0.3.1-beta"
+APP_VERSION = "0.3.2-beta"
 
 # Load .env cho môi trường local (nếu có)
 load_dotenv()
@@ -43,11 +43,11 @@ if not DATABASE_URL and not missing_vars:
         encoded_user = quote_plus(db_user)
         encoded_pass = quote_plus(db_pass)
 
-        # Sử dụng driver asyncpg cho dự án này
-        DATABASE_URL = f"postgresql+asyncpg://{encoded_user}:{encoded_pass}@{db_host}:{db_port}/{db_name}"
+        # FIX: Sử dụng 'postgresql://' thay vì 'postgresql+asyncpg://'
+        DATABASE_URL = f"postgresql://{encoded_user}:{encoded_pass}@{db_host}:{db_port}/{db_name}"
         
         # Log URL an toàn (che password)
-        safe_url = f"postgresql+asyncpg://{encoded_user}:******@{db_host}:{db_port}/{db_name}"
+        safe_url = f"postgresql://{encoded_user}:******@{db_host}:{db_port}/{db_name}"
         print(f"INFO: Constructed DATABASE_URL: {safe_url}", flush=True)
         
     except Exception as e:
@@ -56,8 +56,6 @@ if not DATABASE_URL and not missing_vars:
 # --- 3. VALIDATION ---
 if not DATABASE_URL:
     print("CRITICAL ERROR: DATABASE_URL could not be set. Exiting...", flush=True)
-    # Chúng ta raise lỗi để container crash ngay lập tức nếu thiếu config DB,
-    # giúp ECS restart và ta thấy lỗi ngay thay vì chạy mà không có DB.
     raise ValueError("DATABASE_URL could not be constructed. Check environment variables.")
 
 # --- 4. OTHER CONFIGURATIONS ---
@@ -71,8 +69,6 @@ if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE":
     print("WARNING: GEMINI_API_KEY is missing or invalid.", flush=True)
 
 # AWS Configuration
-# Trong môi trường ECS, nếu dùng Task Role, boto3 có thể tự lấy credential.
-# Tuy nhiên nếu inject qua biến môi trường thì code này vẫn hoạt động tốt.
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
