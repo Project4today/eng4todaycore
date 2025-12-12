@@ -1,44 +1,49 @@
 import json
 from typing import Optional
 import asyncpg
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 
-from core.config import DATABASE_URL, GEMINI_MODEL_VERSION
+from core.config import DATABASE_URL
 
-db_pool: Optional[asyncpg.Pool] = None
+_db_pool: Optional[asyncpg.Pool] = None
 
 async def _init_connection(connection):
-    """Initialize each new database connection by setting the JSONB codec."""
-    await connection.set_type_codec(
-        'jsonb',
-        encoder=lambda v: json.dumps(v, ensure_ascii=False),
-        decoder=json.loads,
-        schema='pg_catalog'
-    )
+    """
+    A hook to set up the JSONB codec for the database connection.
+    """
+    await connection.set_type_codec('jsonb', encoder=json.dumps, decoder=json.loads, schema='pg_catalog')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Handles startup and shutdown events for the application.
-    Connects to the database on startup and closes the connection on shutdown.
+    The lifespan manager for the FastAPI application.
+    It connects to the database on startup and closes the connection on shutdown.
     """
-    global db_pool
-    print("Application startup: connecting to database...")
+    global _db_pool
+    print("Application startup: connecting to database...", flush=True)
     try:
-        db_pool = await asyncpg.create_pool(DATABASE_URL, init=_init_connection)
-        print(f"Successfully connected to the database and configured to use '{GEMINI_MODEL_VERSION}'.")
+        if DATABASE_URL:
+            _db_pool = await asyncpg.create_pool(DATABASE_URL, init=_init_connection)
+            print("Successfully connected to the database.", flush=True)
+        else:
+            print("WARNING: DATABASE_URL not set. Database pool will not be initialized.", flush=True)
+            _db_pool = None
     except Exception as e:
-        print(f"FATAL: Failed to connect to the database: {e}")
-        db_pool = None
+        # Add flush=True to ensure this critical error is logged immediately
+        print(f"FATAL: Failed to connect to the database: {e}", flush=True)
+        _db_pool = None
     
     yield
     
-    if db_pool:
-        print("Application shutdown: closing database connection pool...")
-        await db_pool.close()
-        print("Database connection pool closed.")
+    if _db_pool:
+        print("Application shutdown: closing database connection pool...", flush=True)
+        await _db_pool.close()
+        print("Database connection pool closed.", flush=True)
 
 def get_db_pool():
-    """Dependency to get the database pool."""
-    return db_pool
+    """
+    A dependency to get the database pool.
+    This is used by the API endpoints to interact with the database.
+    """
+    return _db_pool
