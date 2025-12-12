@@ -11,7 +11,7 @@ load_dotenv()
 
 # --- 1. SAFE DEBUGGING: CHECK VARIABLES ---
 # In log để verify trên CloudWatch xem ECS đã inject secret thành công chưa
-print("\n--- [START] CHECKING ENVIRONMENT VARIABLES ---", flush=True)
+print("\n--- [START] CHECKING ENVIRONMENT VARIABLES test111111111111 ---", flush=True)
 
 required_vars = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_PORT", "DB_NAME"]
 missing_vars = []
@@ -24,6 +24,7 @@ for var_name in required_vars:
     else:
         print(f"❌ {var_name:<15}: MISSING", flush=True)
         missing_vars.append(var_name)
+
 
 print("--- [END] CHECKING ENVIRONMENT VARIABLES ---\n", flush=True)
 
