@@ -7,8 +7,6 @@ from api import personas, chat, users, voices
 from db.session import lifespan
 # Import the application version from the config
 from core.config import APP_VERSION
-# Import the logging middleware
-from core.logging_middleware import RequestLoggingMiddleware
 
 # Initialize the FastAPI app with the lifespan manager and the dynamic version
 app = FastAPI(
@@ -18,17 +16,18 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# --- Add Middleware ---
-app.add_middleware(RequestLoggingMiddleware)
+# --- CORS Middleware ---
+# Allows the frontend to communicate with this backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Allows all origins for development
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all HTTP methods
+    allow_headers=["*"],  # Allows all headers
 )
 
 # --- Include Routers ---
+# Mount the persona, chat, and user endpoints with logical prefixes
 app.include_router(personas.router, prefix="/api/personas", tags=["Personas"])
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])

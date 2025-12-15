@@ -1,4 +1,5 @@
 import hashlib
+import re
 import boto3
 from botocore.exceptions import ClientError
 
@@ -43,11 +44,19 @@ def get_presigned_url(file_name: str) -> str:
         print(f"Error generating pre-signed URL: {e}")
         return None
 
+def sanitize_ssml(ssml_text: str) -> str:
+    """
+    Removes unsupported attributes from SSML tags to prevent Polly errors.
+    Specifically targets the 'volume' attribute in the <prosody> tag for Neural voices.
+    """
+    # This regex finds `volume="..."` within a `<prosody ...>` tag and removes it.
+    sanitized = re.sub(r'(<prosody[^>]*)\s+volume="[^"]*"([^>]*>)', r'\1\2', ssml_text, flags=re.IGNORECASE)
+    return sanitized
+
 async def get_or_create_audio_url(text: str, voice_id: str, text_type: str = 'text') -> str:
     """
-    Handles the "write-through" cache.
-    Checks S3 for an existing file; if not found, generates it with Polly and uploads.
-    Returns a fresh pre-signed URL only if the object exists or was successfully created.
+    Handles the "write-through" cache for audio files.
+    Accepts 'text' or 'ssml' as text_type.
     """
     if not all([polly_client, s3_client, S3_BUCKET_NAME]):
         print("AWS service is not configured. Skipping audio generation.")
@@ -60,26 +69,26 @@ async def get_or_create_audio_url(text: str, voice_id: str, text_type: str = 'te
     filename = generate_audio_filename(clean_text, voice_id)
 
     try:
-        # Check if the file already exists in S3
         s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=filename)
         print(f"Cache HIT: Found audio file {filename} in S3.")
-        # If it exists, we can proceed to generate the URL at the end.
-    
     except ClientError as e:
-        # If the error is 404, the file doesn't exist, so we create it.
         if e.response['Error']['Code'] == '404':
             print(f"Cache MISS: File {filename} not in S3. Generating with Polly...")
             try:
-                # Synthesize speech with Polly
+                # Sanitize the SSML before sending it to Polly
+                text_to_synthesize = clean_text
+                if text_type == 'ssml':
+                    text_to_synthesize = sanitize_ssml(clean_text)
+                    print(f"Sanitized SSML for Polly: {text_to_synthesize}")
+
                 response = polly_client.synthesize_speech(
-                    Text=clean_text,
+                    Text=text_to_synthesize,
                     TextType=text_type,
                     OutputFormat="mp3",
                     VoiceId=voice_id,
                     Engine="neural"
                 )
                 
-                # Upload the audio stream to S3
                 s3_client.put_object(
                     Bucket=S3_BUCKET_NAME,
                     Key=filename,
@@ -87,17 +96,11 @@ async def get_or_create_audio_url(text: str, voice_id: str, text_type: str = 'te
                     ContentType="audio/mpeg"
                 )
                 print(f"SUCCESS: Uploaded {filename} to S3.")
-                # Since creation was successful, we can now generate the URL.
             except Exception as polly_error:
                 print(f"ERROR: Failed to generate or upload audio: {polly_error}")
-                # CRITICAL: If creation fails, return None immediately.
                 return None
         else:
-            # Handle other S3 errors (like 403 Forbidden)
             print(f"ERROR: An S3 error occurred on head_object: {e}")
-            # CRITICAL: If we can't check S3, we can't proceed.
             return None
             
-    # This line is now only reached if the object is confirmed to exist on S3
-    # (either because it was already there or because we just uploaded it).
     return get_presigned_url(filename)

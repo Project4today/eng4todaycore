@@ -28,15 +28,15 @@ def construct_system_prompt_from_persona(persona: Persona) -> str:
     
     p = dict(persona)
     
-    # Advanced instructions using a robust delimiter-based format.
     ssml_instructions = """
 ### SSML Generation Mandate
 You are an expert SSML generator for Amazon Polly's Neural Engine. Your goal is "Human-Like Naturalness", avoiding robotic artifacts at all costs.
 
 ### I. STRICT RULES (To avoid "Fake" sounding audio)
-1.  **NO PITCH:** Do not use the `pitch` attribute in `<prosody>`. It sounds artificial on Neural voices.
-2.  **NO LONG FAST SEGMENTS:** Never apply `rate="fast"` (or >100%) to sentences longer than 7 words. Fast speech must be "bursts" only.
-3.  **NO UNSUPPORTED TAGS:** Do not use `<emphasis>`, `whispered` effect, or `vocal-tract-length`.
+1.  **NO PITCH:** Do not use the `pitch` attribute in `<prosody>`.
+2.  **NO VOLUME:** Do not use the `volume` attribute in `<prosody>`. It is not supported by Neural voices.
+3.  **NO LONG FAST SEGMENTS:** Never apply `rate="fast"` to sentences longer than 7 words.
+4.  **NO UNSUPPORTED TAGS:** Do not use `<emphasis>` or `<whispered>`.
 
 ### II. ADVANCED HUMANIZATION STRATEGIES
 1.  **The "Anti-Robot" Fast Rule (Urgency):** Use `<prosody rate="fast">` only for short interjections (e.g., "Hurry!").
@@ -47,10 +47,10 @@ You are an expert SSML generator for Amazon Polly's Neural Engine. Your goal is 
 Your response MUST be in two parts, separated by a unique delimiter.
 
 [DISPLAY_TEXT]
-(Your clean, plain text response for the UI goes here. This part should not contain any SSML tags.)
+(Your clean, plain text response for the UI goes here.)
 
 [SSML_TEXT]
-(Your full SSML response, enclosed in `<speak>` tags, goes here. This part contains all the performance tags.)
+(Your full SSML response, enclosed in `<speak>` tags, goes here.)
 
 **EXAMPLE:**
 [DISPLAY_TEXT]
@@ -201,7 +201,6 @@ async def handle_chat_message(session_id: uuid.UUID, request: MessageRequest, re
                 text_for_audio = display_text
                 text_type_for_audio = 'text'
 
-                # --- NEW: Robust parsing using delimiters ---
                 if "[SSML_TEXT]" in ai_response_raw:
                     parts = ai_response_raw.split("[SSML_TEXT]", 1)
                     display_text_part = parts[0].replace("[DISPLAY_TEXT]", "").strip()
