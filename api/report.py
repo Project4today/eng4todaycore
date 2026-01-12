@@ -34,7 +34,7 @@ HTML_TEMPLATE = """
   <meta charset="utf-8" />
   <style>
     body { font-family: Arial, sans-serif; font-size: 13px; line-height: 1.4; }
-    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    table { width: 80%; border-collapse: collapse; margin-top: 15px; }
     th, td { border: 1px solid #333; padding: 8px; vertical-align: top; }
     th { background-color: #f2f2f2; font-weight: bold; text-align: center; }
     .center { text-align: center; }
