@@ -4,7 +4,7 @@ from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 # --- Application Version ---
-APP_VERSION = "0.3.2-beta"
+APP_VERSION = "0.3.3-beta"
 
 # Load .env cho môi trường local (nếu có)
 load_dotenv()
@@ -24,7 +24,6 @@ for var_name in required_vars:
     else:
         print(f"❌ {var_name:<15}: MISSING", flush=True)
         missing_vars.append(var_name)
-
 
 print("--- [END] CHECKING ENVIRONMENT VARIABLES ---\n", flush=True)
 
@@ -47,6 +46,7 @@ if not DATABASE_URL and not missing_vars:
         encoded_pass = quote_plus(db_pass)
 
         # FIX: Sử dụng 'postgresql://' thay vì 'postgresql+asyncpg://'
+        # asyncpg trực tiếp không hỗ trợ scheme '+asyncpg'
         DATABASE_URL = f"postgresql://{encoded_user}:{encoded_pass}@{db_host}:{db_port}/{db_name}"
         
         # Log URL an toàn (che password)
@@ -77,5 +77,10 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 DEFAULT_POLLY_VOICE_ID = os.getenv("DEFAULT_POLLY_VOICE_ID", "Joanna")
+
+# Jules API Configuration
+JULES_API_KEY = os.getenv("JULES_API_KEY")
+# Updated default URL based on your feedback
+JULES_API_URL = os.getenv("JULES_API_URL", "https://jules.googleapis.com") 
 
 print(f"Successfully loaded configuration for version {APP_VERSION}.", flush=True)
