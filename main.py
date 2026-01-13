@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import routers from the api directory
-from api import personas, chat, users, voices, report
+from api import personas, chat, users, voices, report, jules
 # Import the lifespan manager from the db directory
 from db.session import lifespan
 # Import the application version from the config
@@ -33,6 +33,7 @@ app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(voices.router, prefix="/api/voices", tags=["Voices"])
 app.include_router(report.router, prefix="/api/report", tags=["Report"])
+app.include_router(jules.router, prefix="/api/jules", tags=["Jules"])
 
 # A simple root endpoint to confirm the API is running
 @app.get("/", tags=["Root"])
