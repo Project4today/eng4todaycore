@@ -13,7 +13,7 @@ load_dotenv()
 # In log để verify trên CloudWatch xem ECS đã inject secret thành công chưa
 print("\n--- [START] CHECKING ENVIRONMENT VARIABLES ---", flush=True)
 
-required_vars = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_PORT", "DB_NAME"]
+required_vars = ["DB_HOST", "DB_USER", "DB_PASSWORD", "DB_PORT", "DB_NAME", "JULES_API_KEY"]
 missing_vars = []
 
 for var_name in required_vars:
@@ -40,6 +40,7 @@ if not DATABASE_URL and not missing_vars:
         db_pass = os.getenv("DB_PASSWORD")
         db_port = os.getenv("DB_PORT")
         db_name = os.getenv("DB_NAME")
+        jules_key = os.getenv("JULES_API_KEY")
 
         # Encode user/pass để xử lý ký tự đặc biệt (quan trọng)
         encoded_user = quote_plus(db_user)
